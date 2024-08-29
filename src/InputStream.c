@@ -344,69 +344,6 @@ static void inputSendThreadProc(void* context) {
             return;
         }
 
-        // If it's a multi-controller packet we can do batching
-        if (holder->packet.header.magic == multiControllerMagicLE) {
-            PPACKET_HOLDER controllerBatchHolder;
-            PNV_MULTI_CONTROLLER_PACKET origPkt;
-            short controllerNumber = LE16(holder->packet.multiController.controllerNumber);
-            uint64_t now = PltGetMillis();
-
-            LC_ASSERT(controllerNumber < MAX_GAMEPADS);
-
-            // Delay for batching if required
-            if (now < lastControllerPacketTime[controllerNumber] + CONTROLLER_BATCHING_INTERVAL_MS) {
-                flushInputOnControlStream();
-                PltSleepMs((int)(lastControllerPacketTime[controllerNumber] + CONTROLLER_BATCHING_INTERVAL_MS - now));
-                now = PltGetMillis();
-            }
-
-            origPkt = &holder->packet.multiController;
-            for (;;) {
-                PNV_MULTI_CONTROLLER_PACKET newPkt;
-
-                // Peek at the next packet
-                if (LbqPeekQueueElement(&packetQueue, (void**)&controllerBatchHolder) != LBQ_SUCCESS) {
-                    break;
-                }
-
-                // If it's not a controller packet, we're done
-                if (controllerBatchHolder->packet.header.magic != multiControllerMagicLE) {
-                    break;
-                }
-
-                // Check if it's able to be batched
-                // NB: GFE does some discarding of gamepad packets received very soon after another.
-                // Thus, this batching is needed for correctness in some cases, as GFE will inexplicably
-                // drop *newer* packets in that scenario. The brokenness can be tested with consecutive
-                // calls to LiSendMultiControllerEvent() with different values for analog sticks (max -> zero).
-                newPkt = &controllerBatchHolder->packet.multiController;
-                if (newPkt->buttonFlags != origPkt->buttonFlags ||
-                    newPkt->buttonFlags2 != origPkt->buttonFlags2 ||
-                    newPkt->controllerNumber != origPkt->controllerNumber ||
-                    newPkt->activeGamepadMask != origPkt->activeGamepadMask) {
-                    // Batching not allowed
-                    break;
-                }
-
-                // Remove the batchable controller packet
-                if (LbqPollQueueElement(&packetQueue, (void**)&controllerBatchHolder) != LBQ_SUCCESS) {
-                    break;
-                }
-
-                // Update the original packet
-                origPkt->leftTrigger = newPkt->leftTrigger;
-                origPkt->rightTrigger = newPkt->rightTrigger;
-                origPkt->leftStickX = newPkt->leftStickX;
-                origPkt->leftStickY = newPkt->leftStickY;
-                origPkt->rightStickX = newPkt->rightStickX;
-                origPkt->rightStickY = newPkt->rightStickY;
-
-                // Free the batched packet holder
-                freePacketHolder(controllerBatchHolder);
-            }
-
-            lastControllerPacketTime[controllerNumber] = now;
-        }
         // If it's a relative mouse move packet, we can also do batching
         else if (holder->packet.header.magic == relMouseMagicLE) {
             uint64_t now = PltGetMillis();
@@ -509,42 +446,6 @@ static void inputSendThreadProc(void* context) {
             PltUnlockMutex(&batchedInputMutex);
 
             lastMousePacketTime = now;
-        }
-        // If it's a motion packet, only send the latest for each sensor type
-        else if (holder->packet.header.magic == LE32(SS_CONTROLLER_MOTION_MAGIC)) {
-            uint8_t controllerNumber = holder->packet.controllerMotion.controllerNumber;
-            uint8_t motionType = holder->packet.controllerMotion.motionType;
-
-            LC_ASSERT(controllerNumber < MAX_GAMEPADS);
-            LC_ASSERT(motionType - 1 < MAX_MOTION_EVENTS);
-
-            PltLockMutex(&batchedInputMutex);
-
-            // LI_MOTION_TYPE_* values are 1-based, so we have to subtract 1 to index into our state array
-            float x = currentGamepadSensorState[controllerNumber][motionType - 1].x;
-            float y = currentGamepadSensorState[controllerNumber][motionType - 1].y;
-            float z = currentGamepadSensorState[controllerNumber][motionType - 1].z;
-
-            // Motion events are so rapid that we can just drop any events that are lost in transit,
-            // but we will treat (0, 0, 0) as a special value for gyro events to allow clients to
-            // reliably set the gyro to a null state when sensor events are halted due to focus loss
-            // or similar client-side constraints.
-            if (motionType == LI_MOTION_TYPE_GYRO && x == 0.0f && y == 0.0f && z == 0.0f) {
-                holder->enetPacketFlags = ENET_PACKET_FLAG_RELIABLE;
-            }
-            else {
-                holder->enetPacketFlags = 0;
-            }
-
-            // Populate the packet with the latest state
-            floatToNetfloat(x, holder->packet.controllerMotion.x);
-            floatToNetfloat(y, holder->packet.controllerMotion.y);
-            floatToNetfloat(z, holder->packet.controllerMotion.z);
-
-            // The state change is no longer pending
-            currentGamepadSensorState[controllerNumber][motionType - 1].dirty = false;
-
-            PltUnlockMutex(&batchedInputMutex);
         }
         // If it's a UTF-8 text packet, we may need to split it into a several packets to send
         else if (holder->packet.header.magic == LE32(UTF8_TEXT_EVENT_MAGIC)) {
