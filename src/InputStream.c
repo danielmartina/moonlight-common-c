@@ -60,7 +60,7 @@ static struct {
 #define PEN_BATCHING_INTERVAL_MS 1
 
 // Don't batch up/down/cancel events
-#define TOUCH_EVENT_IS_BATCHABLE(x) ((x) == LI_TOUCH_EVENT_HOVER || (x) == LI_TOUCH_EVENT_MOVE)
+#define TOUCH_EVENT_IS_BATCHABLE(x) ((x) == LI_TOUCH_EVENT_HOVER)
 
 // Contains input stream packets
 typedef struct _PACKET_HOLDER {
